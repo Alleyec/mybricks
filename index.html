@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>3D Brick Breaker Game</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #gameInfo {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            z-index: 1;
+        }
+        #startButton {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 10px 20px;
+            background-color: #00ff00;
+            border: none;
+            font-size: 20px;
+            color: #000;
+            cursor: pointer;
+            z-index: 2;
+        }
+        #gameOverMessage {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: red;
+            font-size: 24px;
+            font-family: Arial, sans-serif;
+            z-index: 2;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameInfo">Level: <span id="level">1</span> | Score: <span id="score">0</span></div>
+    <div id="gameOverMessage">Game Over! Tap to Restart</div>
+    <button id="startButton">Start Game</button>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Scene setup
+        const scene = new THREE.Scene();
+
+        // Camera setup
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, -5, 30);
+        camera.lookAt(0, 0, 0);
+
+        // Renderer setup
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        const pointLight = new THREE.PointLight(0xffffff, 1);
+        pointLight.position.set(0, 10, 10);
+        scene.add(pointLight);
+
+        // Game variables
+        let paddle, ball, bricks = [];
+        let score = 0, level = 1;
+        const paddleSpeed = 0.4;
+        let ballSpeed = 0.2; // Adjusted for smoother gameplay
+        let gameStarted = false;
+
+        // Audio context and sounds
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const sounds = {};
+
+        // Base64 encoded sound data (simple beep sounds)
+        const soundData = {
+            paddle: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAkD4AAIhYAQACABAAZGF0YQAAAAA=",
+            brick: "data:audio/wav;base64,UklGRhQAAABXQVZFZm10IBAAAAABAAEAgD4AAIhYAQACABAAZGF0YQAAAAA=",
+            levelUp: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAkD4AAIhYAQACABAAZGF0YQAAAAA=",
+            gameOver: "data:audio/wav;base64,UklGRhQAAABXQVZFZm10IBAAAAABAAEAjD4AAIhYAQACABAAZGF0YQAAAAA="
+        };
+
+        function loadSound(name, url) {
+            fetch(url)
+                .then(response => response.arrayBuffer())
+                .then(arrayBuffer => audioContext.decodeAudioData(arrayBuffer))
+                .then(audioBuffer => {
+                    sounds[name] = audioBuffer;
+                });
+        }
+
+        Object.entries(soundData).forEach(([name, url]) => loadSound(name, url));
+
+        function playSound(name) {
+            if (sounds[name]) {
+                const source = audioContext.createBufferSource();
+                source.buffer = sounds[name];
+                source.connect(audioContext.destination);
+                source.start();
+            }
+        }
+
+        // Create paddle
+        const paddleGeometry = new THREE.BoxGeometry(4, 0.5, 1);
+        const paddleMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+        paddle = new THREE.Mesh(paddleGeometry, paddleMaterial);
+        paddle.position.set(0, -10, 0);
+        scene.add(paddle);
+
+        // Create ball
+        const ballGeometry = new THREE.SphereGeometry(0.5, 32, 32);
+        const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        ball = new THREE.Mesh(ballGeometry, ballMaterial);
+        ball.position.set(0, -9.5, 0);
+        scene.add(ball);
+
+        // Create game borders
+        const borderMaterial = new THREE.LineBasicMaterial({ color: 0xffffff });
+        const borderGeometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(25, 18, 1));
+        const gameBorder = new THREE.LineSegments(borderGeometry, borderMaterial);
+        gameBorder.position.set(0, 0, -1);
+        scene.add(gameBorder);
+
+        // Level layouts with different patterns
+        const levelLayouts = [
+            // Level 1: Simple grid
+            {
+                rows: 3,
+                cols: 5,
+                spacing: 3,
+                pattern: 'grid'
+            },
+            // Level 2: Checkerboard pattern
+            {
+                rows: 4,
+                cols: 6,
+                spacing: 2.8,
+                pattern: 'checkerboard'
+            },
+            // Level 3: Pyramid
+            {
+                rows: 5,
+                cols: 9,
+                spacing: 2.5,
+                pattern: 'pyramid'
+            },
+            // Level 4: Diamond
+            {
+                rows: 7,
+                cols: 7,
+                spacing: 2.2,
+                pattern: 'diamond'
+            },
+            // Level 5: Random gaps
+            {
+                rows: 6,
+                cols: 8,
+                spacing: 2.4,
+                pattern: 'random'
+            }
+        ];
+
+        function createBricks(layout) {
+            bricks.forEach(brick => scene.remove(brick));
+            bricks = [];
+
+            const { rows, cols, spacing, pattern } = layout;
+            const colors = [0xff0000, 0xff7f00, 0xffff00, 0x00ff00, 0x0000ff, 0x8b00ff];
+
+            for (let i = 0; i < rows; i++) {
+                for (let j = 0; j < cols; j++) {
+                    let createBrick = true;
+
+                    if (pattern === 'checkerboard') {
+                        if ((i + j) % 2 === 0) createBrick = false;
+                    } else if (pattern === 'pyramid') {
+                        if (j < Math.floor(cols / 2) - i || j > Math.floor(cols / 2) + i) {
+                            createBrick = false;
+                        }
+                    } else if (pattern === 'diamond') {
+                        if (Math.abs(j - Math.floor(cols / 2)) + Math.abs(i - Math.floor(rows / 2)) > Math.floor(rows / 2)) {
+                            createBrick = false;
+                        }
+                    } else if (pattern === 'random') {
+                        if (Math.random() < 0.3) createBrick = false;
+                    }
+
+                    if (createBrick) {
+                        const brickGeometry = new THREE.BoxGeometry(2, 1, 1);
+                        const brickMaterial = new THREE.MeshStandardMaterial({ color: colors[Math.floor(Math.random() * colors.length)] });
+                        const brick = new THREE.Mesh(brickGeometry, brickMaterial);
+                        brick.position.set(
+                            (j - cols / 2 + 0.5) * spacing,
+                            (rows / 2 - i) * 2 + 4,
+                            0
+                        );
+                        scene.add(brick);
+                        bricks.push(brick);
+                    }
+                }
+            }
+        }
+
+        function resetBall() {
+            ball.position.set(0, -9.5, 0);
+            ballSpeed = 0.2; // Reset to initial speed
+            gameStarted = false;
+        }
+
+        function startGame() {
+            if (!gameStarted) {
+                gameStarted = true;
+                document.getElementById('startButton').style.display = 'none';
+                document.getElementById('gameOverMessage').style.display = 'none';
+                ball.velocity = new THREE.Vector3(
+                    (Math.random() - 0.5) * 0.2,
+                    Math.random() * 0.1 + 0.1,
+                    0
+                );
+                ball.velocity.normalize().multiplyScalar(ballSpeed);
+            }
+        }
+
+        function gameOver() {
+            gameStarted = false;
+            document.getElementById('gameOverMessage').style.display = 'block';
+            document.getElementById('startButton').style.display = 'block';
+            playSound('gameOver');
+        }
+
+        function updateGame() {
+            if (gameStarted) {
+                ball.position.add(ball.velocity);
+
+                // Wall collision
+                if (ball.position.x <= -12.5 || ball.position.x >= 12.5) {
+                    ball.velocity.x *= -1;
+                    playSound('paddle');
+                }
+                if (ball.position.y >= 8) {
+                    ball.velocity.y *= -1;
+                    playSound('paddle');
+                }
+
+                // Paddle collision
+                if (
+                    ball.position.y <= paddle.position.y + 0.5 &&
+                    ball.position.y >= paddle.position.y &&
+                    ball.position.x >= paddle.position.x - 2 &&
+                    ball.position.x <= paddle.position.x + 2
+                ) {
+                    ball.velocity.y *= -1;
+                    ball.velocity.x += (ball.position.x - paddle.position.x) * 0.05;
+                    playSound('paddle');
+                }
+
+                // Brick collision
+                for (let i = 0; i < bricks.length; i++) {
+                    const brick = bricks[i];
+                    if (ball.position.distanceTo(brick.position) < 1.5) {
+                        scene.remove(brick);
+                        bricks.splice(i, 1);
+                        ball.velocity.y *= -1;
+                        score += 10;
+                        document.getElementById('score').textContent = score;
+                        playSound('brick');
+                        break;
+                    }
+                }
+
+                if (bricks.length === 0) {
+                    level++;
+                    if (level <= levelLayouts.length) {
+                        document.getElementById('level').textContent = level;
+                        createBricks(levelLayouts[level - 1]);
+                        resetBall();
+                        playSound('levelUp');
+                    } else {
+                        alert('Congratulations! You completed all levels!');
+                        level = 1;
+                        score = 0;
+                        document.getElementById('level').textContent = level;
+                        document.getElementById('score').textContent = score;
+                        createBricks(levelLayouts[0]);
+                        resetBall();
+                        playSound('levelUp');
+                    }
+                }
+
+                if (ball.position.y < -10) {
+                    gameOver();
+                }
+            }
+        }
+
+        // Event listeners for starting the game
+        document.addEventListener('keydown', (event) => {
+            if (event.code === 'Space' && !gameStarted) {
+                startGame();
+            }
+        });
+
+        renderer.domElement.addEventListener('mousedown', () => {
+            if (!gameStarted) {
+                startGame();
+            }
+        });
+
+        // Controls
+        document.addEventListener('mousemove', (event) => {
+            const rect = renderer.domElement.getBoundingClientRect();
+            const mouseX = ((event.clientX - rect.left) / rect.width) * 25 - 12.5;
+            paddle.position.x = Math.max(-12.5, Math.min(12.5, mouseX));
+        });
+
+        // Touch controls
+        document.addEventListener('touchmove', (event) => {
+            const rect = renderer.domElement.getBoundingClientRect();
+            const touchX = ((event.touches[0].clientX - rect.left) / rect.width) * 25 - 12.5;
+            paddle.position.x = Math.max(-12.5, Math.min(12.5, touchX));
+        });
+
+        document.getElementById('startButton').addEventListener('click', () => {
+            score = 0;
+            level = 1;
+            document.getElementById('level').textContent = level;
+            document.getElementById('score').textContent = score;
+            createBricks(levelLayouts[0]);
+            startGame();
+        });
+
+        document.getElementById('gameOverMessage').addEventListener('click', () => {
+            score = 0;
+            level = 1;
+            document.getElementById('level').textContent = level;
+            document.getElementById('score').textContent = score;
+            createBricks(levelLayouts[0]);
+            startGame();
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Initialize the first level
+        createBricks(levelLayouts[0]);
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            updateGame();
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
